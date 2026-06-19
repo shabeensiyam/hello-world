@@ -1,0 +1,36 @@
+name: PR Artifact
+
+# Runs on every pull request. Writes the PR head SHA (and a little metadata)
+# into a text file and uploads it as a workflow artifact. This artifact is the
+# thing the post-merge "reverse lookup" workflow will later fetch and verify.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate SHA artifact
+        run: |
+          set -euo pipefail
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          echo "Generating artifact for PR #${PR_NUMBER}, head sha ${HEAD_SHA}"
+          # Append, line by line, so it doubles as a "newline appended" test.
+          {
+            echo "pr_number=${PR_NUMBER}"
+            echo "head_sha=${HEAD_SHA}"
+            echo "generated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >> sha-artifact.txt
+          echo "----- sha-artifact.txt -----"
+          cat sha-artifact.txt
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sha-artifact
+          path: sha-artifact.txt
+          retention-days: 5

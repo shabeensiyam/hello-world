@@ -1,0 +1,93 @@
+name: Merge Reverse Lookup
+
+# Runs on every push to master (i.e. after a PR merges, or a direct push).
+# Given the pushed commit SHA, it:
+#   1. reverse-looks-up the PR associated with that commit (works for merge,
+#      squash and rebase merges) via the "commits/{sha}/pulls" API,
+#   2. recovers the PR head SHA,
+#   3. finds the "PR Artifact" workflow run for that head SHA,
+#   4. downloads the artifact it produced,
+#   5. verifies the SHA stored in the artifact matches the PR head SHA.
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
+
+jobs:
+  reverse-lookup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reverse lookup PR, fetch artifact, verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          echo "::group::1. Reverse lookup PR from commit ${SHA}"
+          PR_JSON=$(gh api "repos/${REPO}/commits/${SHA}/pulls")
+          echo "${PR_JSON}" | jq '.'
+          PR_COUNT=$(echo "${PR_JSON}" | jq 'length')
+          echo "Associated PR count: ${PR_COUNT}"
+          echo "::endgroup::"
+
+          if [ "${PR_COUNT}" -eq 0 ]; then
+            echo "No PR is associated with commit ${SHA} (direct push to master)."
+            {
+              echo "## Merge Reverse Lookup"
+              echo "- main commit: \`${SHA}\`"
+              echo "- result: ⚠️ no associated PR (direct push) — nothing to verify"
+            } >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+
+          PR_NUMBER=$(echo "${PR_JSON}" | jq -r '.[0].number')
+          HEAD_SHA=$(echo "${PR_JSON}" | jq -r '.[0].head.sha')
+          echo "Associated PR: #${PR_NUMBER}"
+          echo "PR head sha:   ${HEAD_SHA}"
+
+          echo "::group::2. Find 'PR Artifact' run for head sha ${HEAD_SHA}"
+          RUNS_JSON=$(gh api "repos/${REPO}/actions/runs?head_sha=${HEAD_SHA}&event=pull_request")
+          echo "${RUNS_JSON}" | jq '[.workflow_runs[] | {id, name, event, status, conclusion, head_sha}]'
+          RUN_ID=$(echo "${RUNS_JSON}" | jq -r '[.workflow_runs[] | select(.name=="PR Artifact")] | .[0].id // empty')
+          echo "::endgroup::"
+
+          if [ -z "${RUN_ID}" ]; then
+            echo "ERROR: no 'PR Artifact' run found for head sha ${HEAD_SHA}"
+            exit 1
+          fi
+          echo "Found PR Artifact run id: ${RUN_ID}"
+
+          echo "::group::3. Download artifact from run ${RUN_ID}"
+          gh run download "${RUN_ID}" -n sha-artifact --dir ./_artifact
+          echo "----- downloaded sha-artifact.txt -----"
+          cat ./_artifact/sha-artifact.txt
+          echo "::endgroup::"
+
+          ARTIFACT_HEAD_SHA=$(grep '^head_sha=' ./_artifact/sha-artifact.txt | cut -d= -f2)
+
+          echo "main commit sha:    ${SHA}"
+          echo "PR head sha (API):  ${HEAD_SHA}"
+          echo "artifact head sha:  ${ARTIFACT_HEAD_SHA}"
+
+          {
+            echo "## Merge Reverse Lookup"
+            echo "- PR: #${PR_NUMBER}"
+            echo "- main commit: \`${SHA}\`"
+            echo "- PR head sha (API): \`${HEAD_SHA}\`"
+            echo "- artifact head sha: \`${ARTIFACT_HEAD_SHA}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          if [ "${ARTIFACT_HEAD_SHA}" = "${HEAD_SHA}" ]; then
+            echo "✅ MATCH: artifact head sha equals PR head sha"
+            echo "- result: ✅ MATCH" >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "❌ MISMATCH: artifact (${ARTIFACT_HEAD_SHA}) != PR head (${HEAD_SHA})"
+            echo "- result: ❌ MISMATCH" >> "${GITHUB_STEP_SUMMARY}"
+            exit 1
+          fi
