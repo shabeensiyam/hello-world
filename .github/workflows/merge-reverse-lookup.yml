@@ -30,9 +30,22 @@ jobs:
           set -euo pipefail
 
           echo "::group::1. Reverse lookup PR from commit ${SHA}"
-          PR_JSON=$(gh api "repos/${REPO}/commits/${SHA}/pulls")
+          # The commits/{sha}/pulls association is eventually consistent: right
+          # after a merge it can briefly return []. Retry for up to ~75s before
+          # concluding there really is no PR (i.e. a direct push).
+          PR_JSON="[]"
+          PR_COUNT=0
+          for attempt in $(seq 1 15); do
+            PR_JSON=$(gh api "repos/${REPO}/commits/${SHA}/pulls" 2>/dev/null || echo "[]")
+            PR_COUNT=$(echo "${PR_JSON}" | jq 'length')
+            if [ "${PR_COUNT}" -gt 0 ]; then
+              echo "Found ${PR_COUNT} associated PR(s) on attempt ${attempt}"
+              break
+            fi
+            echo "Attempt ${attempt}/15: no PR associated yet, retrying in 5s..."
+            sleep 5
+          done
           echo "${PR_JSON}" | jq '.'
-          PR_COUNT=$(echo "${PR_JSON}" | jq 'length')
           echo "Associated PR count: ${PR_COUNT}"
           echo "::endgroup::"
 
@@ -64,7 +77,8 @@ jobs:
           echo "Found PR Artifact run id: ${RUN_ID}"
 
           echo "::group::3. Download artifact from run ${RUN_ID}"
-          gh run download "${RUN_ID}" -n sha-artifact --dir ./_artifact
+          # -R is required: there is no checkout, so gh has no repo context.
+          gh run download "${RUN_ID}" -R "${REPO}" -n sha-artifact --dir ./_artifact
           echo "----- downloaded sha-artifact.txt -----"
           cat ./_artifact/sha-artifact.txt
           echo "::endgroup::"
