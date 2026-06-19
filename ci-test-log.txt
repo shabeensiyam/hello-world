@@ -1,1 +1,2 @@
 rebase test case — PR #3
+merge-commit test case — PR #4
