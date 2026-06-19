@@ -1,0 +1,2 @@
+This file was committed directly to master with no PR, to exercise the
+"no associated PR" path of the Merge Reverse Lookup workflow.
